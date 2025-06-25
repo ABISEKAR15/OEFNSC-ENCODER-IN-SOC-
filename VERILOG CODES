@@ -1,0 +1,207 @@
+module oefnsc_encoder #(parameter WIDTH = 8) (
+    input [WIDTH-1:0] din,        // Input data
+    input [WIDTH-1:0] prev_data, // Previous data
+    input clk,                    // Clock signal
+    input reset,                  // Reset signal
+    input clk_en,                 // Clock enable (for clock gating)
+    output reg [WIDTH-1:0] dout,  // Encoded data
+    output reg [1:0] inv,        // Inversion type
+    output reg [7:0] encoding_type // Output encoding type (UNCODED, BINV, etc.)
+);
+
+    wire [WIDTH-1:0] odd_inv = din ^ 8'h55;  // Odd inversion (0x55 -> 01010101)
+    wire [WIDTH-1:0] even_inv = din ^ 8'hAA; // Even inversion (0xAA -> 10101010)
+    wire [WIDTH-1:0] full_inv = ~din;        // Full inversion
+
+    // Switching Activity Estimation
+    function integer calc_switching;
+        input [WIDTH-1:0] data1, data2;
+        integer i, count;
+        begin
+            count = 0;
+            for (i = 0; i < WIDTH; i = i + 1)
+                count = count + (data1[i] ^ data2[i]);
+            calc_switching = count;
+        end
+    endfunction
+
+    // Activity Factors
+    integer af_normal, af_odd, af_even, af_full;
+
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin
+            dout <= 0;
+            inv <= 2'b00;
+            encoding_type <= 8'b00000000; // No encoding type selected
+        end else if (clk_en) begin // If clock is enabled, proceed with encoding
+            // Calculate switching activity factors
+            af_normal = calc_switching(din, prev_data);
+            af_odd = calc_switching(odd_inv, prev_data);
+            af_even = calc_switching(even_inv, prev_data);
+            af_full = calc_switching(full_inv, prev_data);
+
+            // Select data with minimal activity factor
+            if (af_normal <= af_odd && af_normal <= af_even && af_normal <= af_full) begin
+                dout <= din;
+                inv <= 2'b00;
+                encoding_type <= 8'b00000001; // UNCODED
+            end else if (af_odd < af_even && af_odd < af_full) begin
+                dout <= odd_inv;
+                inv <= 2'b01;
+                encoding_type <= 8'b00000010; // BINV
+            end else if (af_even < af_full) begin
+                dout <= even_inv;
+                inv <= 2'b10;
+                encoding_type <= 8'b00000100; // BSHIFT
+            end else begin
+                dout <= full_inv;
+                inv <= 2'b11;
+                encoding_type <= 8'b00001000; // EESCT
+            end
+        end
+    end
+endmodule
+
+*test bench 
+`timescale 1ns / 1ps
+
+module oefnsc_tb;
+
+    // Parameters for dynamic power calculation
+    real C = 1e-12;           // Capacitance in Farads (1 pF)
+    real VDD = 1.0;           // Supply voltage in Volts
+    real f = 100e6;           // Clock frequency in Hz (100 MHz)
+
+    // Inputs
+    reg [7:0] din;       // Current data (8-bit)
+    reg [7:0] prev_data; // Previous data (8-bit)
+    reg clk;
+    reg reset;
+    reg clk_en;
+
+    // Outputs
+    wire [7:0] dout_encoded;
+    wire [1:0] inv;
+    wire [7:0] encoding_type;
+
+    // Instantiate Encoder
+    oefnsc_encoder #(8) uut_encoder (
+        .din(din),
+        .prev_data(prev_data),
+        .clk(clk),
+        .reset(reset),
+        .clk_en(clk_en),
+        .dout(dout_encoded),
+        .inv(inv),
+        .encoding_type(encoding_type)
+    );
+
+    // Clock generation
+    always #5 clk = ~clk; // 10ns clock period
+
+    // Function to calculate switching activity
+    function integer calc_switching;
+        input [7:0] data1, data2;
+        integer j, count;
+        begin
+            count = 0;
+            for (j = 0; j < 8; j = j + 1)
+                count = count + (data1[j] ^ data2[j]); // XOR to find bit transitions
+            calc_switching = count;
+        end
+    endfunction
+
+    // Function to calculate dynamic power consumption
+    function real calc_dynamic_power;
+        input integer switching_activity;
+        real power;
+        begin
+            power = C * VDD * VDD * f * switching_activity; // Power in Watts
+            calc_dynamic_power = power * 1e3; // Convert to milliwatts (mW)
+        end
+    endfunction
+
+    // Display Results in the required format
+    task display_results;
+        input integer test_case;
+        input [7:0] din;
+        input [7:0] dout_encoded;
+        input [7:0] prev_data;
+        input [7:0] encoding_type;
+        input integer switching_activity;
+        input real dynamic_power;
+        begin
+            $display("Test Case #%d:", test_case);
+            $display("Original Data: %b", din);
+            $display("Encoded Data: %b", dout_encoded);
+            $display("Decoded Data: %b", prev_data);  // You can add decoding logic if necessary
+            $display("Switching Activity: %d", switching_activity);
+            $display("Dynamic Power Consumption: %.3f mW", dynamic_power);
+            $display("Encoding Type: %s", get_encoding_method(encoding_type));
+            $display("-----------------------------------------------------");
+        end
+    endtask
+
+    // Function to get encoding method based on encoding_type
+    function [8*16:1] get_encoding_method; // 16 characters for encoding method
+        input [7:0] encoding_type;
+        begin
+            case (encoding_type)
+                8'b00000001: get_encoding_method = "UNCODED";
+                8'b00000010: get_encoding_method = "BINV";
+                8'b00000100: get_encoding_method = "BSHIFT";
+                8'b00001000: get_encoding_method = "EESCT";
+                8'b00010000: get_encoding_method = "DYNAMIC";
+                8'b00100000: get_encoding_method = "BRG";
+                8'b01000000: get_encoding_method = "BRG_HD";
+                8'b10000000: get_encoding_method = "SCH-1";
+                8'b10000001: get_encoding_method = "SCH-2";
+                8'b10000010: get_encoding_method = "SCH-3";
+                8'b10000011: get_encoding_method = "OEFNSC";
+                8'b10000100: get_encoding_method = "OEFNSC-SEG";
+                default: get_encoding_method = "Unknown";
+            endcase
+        end
+    endfunction
+
+    // Declare variables at the module level (outside of initial block)
+    integer switching_activity;  // Corrected declaration of switching_activity
+    real dynamic_power;          // Corrected declaration of dynamic_power
+    integer i;                   // Loop counter
+
+    // Testbench logic
+    initial begin
+        // Initialize inputs
+        clk = 0;
+        reset = 1;
+        clk_en = 0;
+        din = 0;
+        prev_data = 0;
+
+        // Wait for reset release
+        #10 reset = 0;
+        #10 clk_en = 1; // Enable clock
+
+        // Loop to simulate 10,000 random inputs
+        for (i = 0; i < 10000; i = i + 1) begin
+            // Generate random 8-bit data
+            din = $random;  
+            prev_data = $random;  // Generate random previous data
+
+            // Wait for one clock cycle
+            #10;
+
+            // Calculate switching activity
+            switching_activity = calc_switching(din, prev_data);  // Calling the function
+
+            // Calculate dynamic power consumption
+            dynamic_power = calc_dynamic_power(switching_activity);  // Calling the function
+
+            // Display results for the current test case
+            display_results(i + 1, din, dout_encoded, prev_data, encoding_type, switching_activity, dynamic_power);
+        end
+
+        #50 $stop; // End simulation
+    end
+
+endmodule
